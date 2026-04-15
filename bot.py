@@ -16,32 +16,11 @@ from telegram.ext import (
     ContextTypes
 )
 
-CHANNEL_ID = -1003685752199
 TOKEN = os.getenv("BOT_TOKEN")
+CHANNEL_ID = -1003685752199
+ADMIN_ID = 6116012945  # 👈 вставь свой id
 
-# 🔐 ТВОЙ TELEGRAM ID (узнай через @userinfobot)
-ADMIN_ID = 6116012945
-
-
-# ❌ базовый фильтр
 BAD_WORDS = ["казино", "ставки", "секс", "18+", "http", "https", "t.me"]
-
-
-# 🤖 AI фильтр (простая логика)
-def ai_filter(text):
-    text = text.lower()
-
-    # подозрительные паттерны
-    if text.count("$") > 2:
-        return False
-
-    if len(text) < 5:
-        return False
-
-    if any(word in text for word in BAD_WORDS):
-        return False
-
-    return True
 
 
 # 🧠 БД
@@ -55,7 +34,31 @@ def init_db():
         user_id INTEGER,
         text TEXT,
         category TEXT,
-        photo TEXT
+        photo TEXT,
+        likes INTEGER DEFAULT 0,
+        views INTEGER DEFAULT 0
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS likes (
+        user_id INTEGER,
+        ad_id INTEGER
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS favorites (
+        user_id INTEGER,
+        ad_id INTEGER
+    )
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS reviews (
+        seller_id INTEGER,
+        user_id INTEGER,
+        rating INTEGER
     )
     """)
 
@@ -63,11 +66,28 @@ def init_db():
     conn.close()
 
 
+# 🤖 AI фильтр
+def ai_filter(text):
+    text = text.lower()
+
+    if len(text) < 5:
+        return False
+
+    if any(word in text for word in BAD_WORDS):
+        return False
+
+    if text.count("$") > 3:
+        return False
+
+    return True
+
+
 # 🔹 клавиатуры
 def main_kb():
     return ReplyKeyboardMarkup([
         ["Создать", "📄 Мои"],
-        ["🔍 Поиск"]
+        ["🔍 Поиск", "⭐ Избранное"],
+        ["🏆 Топ"]
     ], resize_keyboard=True)
 
 
@@ -77,7 +97,23 @@ def back_kb():
 
 # 🚀 старт
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Меню", reply_markup=main_kb())
+    await update.message.reply_text("🚀 Маркетплейс бот", reply_markup=main_kb())
+
+
+# 📊 рейтинг продавца
+def get_rating(seller_id):
+    conn = sqlite3.connect("bot.db")
+    cur = conn.cursor()
+
+    cur.execute("SELECT rating FROM reviews WHERE seller_id=?", (seller_id,))
+    data = cur.fetchall()
+    conn.close()
+
+    if not data:
+        return "нет"
+
+    avg = sum(x[0] for x in data) / len(data)
+    return round(avg, 2)
 
 
 # 📄 мои объявления
@@ -85,80 +121,82 @@ async def my_ads(update, context):
     conn = sqlite3.connect("bot.db")
     cur = conn.cursor()
 
-    cur.execute("SELECT id, text FROM ads WHERE user_id=?", (update.effective_user.id,))
+    cur.execute("SELECT id, text, likes, views FROM ads WHERE user_id=?", (update.effective_user.id,))
     ads = cur.fetchall()
     conn.close()
 
-    if not ads:
-        await update.message.reply_text("Нет объявлений")
-        return
-
-    for ad_id, text in ads:
-        await update.message.reply_text(f"{ad_id}: {text}")
+    for ad_id, text, likes, views in ads:
+        await update.message.reply_text(f"{text}\n❤️ {likes} 👁 {views}")
 
 
-# 🔎 поиск
-async def search_ads(update, context, text):
+# ⭐ избранное
+async def favs(update, context):
     conn = sqlite3.connect("bot.db")
     cur = conn.cursor()
 
-    cur.execute("SELECT id, text FROM ads WHERE text LIKE ?", (f"%{text}%",))
+    cur.execute("""
+    SELECT ads.id, ads.text FROM ads
+    JOIN favorites ON ads.id = favorites.ad_id
+    WHERE favorites.user_id=?
+    """, (update.effective_user.id,))
+
     data = cur.fetchall()
     conn.close()
 
-    if not data:
-        await update.message.reply_text("Ничего не найдено")
-        return
-
-    for ad_id, t in data:
-        await update.message.reply_text(f"{ad_id}: {t}")
+    for ad_id, text in data:
+        await update.message.reply_text(text)
 
 
-# 👑 АДМИН ПАНЕЛЬ
-async def admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
+# 🏆 топ
+async def top_ads(update, context):
+    conn = sqlite3.connect("bot.db")
+    cur = conn.cursor()
 
-    await update.message.reply_text(
-        "👑 Админ панель:\n"
-        "/all_ads - все объявления\n"
-        "/delete ID - удалить объявление"
-    )
+    cur.execute("SELECT text, likes FROM ads ORDER BY likes DESC LIMIT 5")
+    data = cur.fetchall()
+    conn.close()
+
+    for text, likes in data:
+        await update.message.reply_text(f"{text}\n❤️ {likes}")
 
 
-async def all_ads(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
+# 🔘 кнопки
+async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    action, ad_id = query.data.split("_")
+    ad_id = int(ad_id)
+    user_id = query.from_user.id
 
     conn = sqlite3.connect("bot.db")
     cur = conn.cursor()
 
-    cur.execute("SELECT id, text FROM ads")
-    ads = cur.fetchall()
+    if action == "like":
+        cur.execute("SELECT * FROM likes WHERE user_id=? AND ad_id=?", (user_id, ad_id))
+        if cur.fetchone():
+            await query.answer("Уже лайкал")
+            return
+
+        cur.execute("INSERT INTO likes VALUES (?,?)", (user_id, ad_id))
+        cur.execute("UPDATE ads SET likes=likes+1 WHERE id=?", (ad_id,))
+        conn.commit()
+
+    elif action == "fav":
+        cur.execute("INSERT INTO favorites VALUES (?,?)", (user_id, ad_id))
+        conn.commit()
+        await query.answer("Добавлено ⭐")
+
+    elif action == "contact":
+        cur.execute("SELECT user_id FROM ads WHERE id=?", (ad_id,))
+        seller = cur.fetchone()[0]
+
+        await context.bot.send_message(
+            seller,
+            f"💬 Тебе написал покупатель: @{query.from_user.username}"
+        )
+
     conn.close()
-
-    for ad_id, text in ads:
-        await update.message.reply_text(f"{ad_id}: {text}")
-
-
-async def delete_ad(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    try:
-        ad_id = int(context.args[0])
-    except:
-        await update.message.reply_text("Используй: /delete ID")
-        return
-
-    conn = sqlite3.connect("bot.db")
-    cur = conn.cursor()
-
-    cur.execute("DELETE FROM ads WHERE id=?", (ad_id,))
-    conn.commit()
-    conn.close()
-
-    await update.message.reply_text("Удалено ✅")
 
 
 # 📸 фото
@@ -167,7 +205,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     context.user_data["photo"] = update.message.photo[-1].file_id
-    await update.message.reply_text("Теперь напиши: название, цена (через запятую)")
+    await update.message.reply_text("Теперь напиши: описание, цена")
 
 
 # 💬 сообщения
@@ -184,13 +222,36 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await my_ads(update, context)
         return
 
+    if text == "⭐ Избранное":
+        await favs(update, context)
+        return
+
+    if text == "🏆 Топ":
+        await top_ads(update, context)
+        return
+
     if text == "🔍 Поиск":
         context.user_data["search"] = True
         await update.message.reply_text("Что ищем?")
         return
 
     if context.user_data.get("search"):
-        await search_ads(update, context, text)
+        conn = sqlite3.connect("bot.db")
+        cur = conn.cursor()
+
+        cur.execute("SELECT id, text FROM ads WHERE text LIKE ?", (f"%{text}%",))
+        data = cur.fetchall()
+        conn.close()
+
+        for ad_id, t in data:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("❤️", callback_data=f"like_{ad_id}")],
+                [InlineKeyboardButton("⭐", callback_data=f"fav_{ad_id}")],
+                [InlineKeyboardButton("💬 Написать", callback_data=f"contact_{ad_id}")]
+            ])
+
+            await update.message.reply_text(t, reply_markup=keyboard)
+
         context.user_data["search"] = False
         return
 
@@ -205,23 +266,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Отправь фото", reply_markup=back_kb())
         return
 
-    # 🧠 СОЗДАНИЕ + AI МОДЕРАЦИЯ
+    # 🧠 создание
     if context.user_data.get("create"):
 
         if not ai_filter(text):
-            await update.message.reply_text("❌ Объявление отклонено AI фильтром")
-            
-            # уведомление админу
-            await context.bot.send_message(
-                ADMIN_ID,
-                f"🚫 Заблокировано:\n{text}"
-            )
-
-            context.user_data.clear()
+            await update.message.reply_text("❌ Отклонено")
             return
 
         if "," not in text:
-            await update.message.reply_text("Пример: Nike Air, 200$")
+            await update.message.reply_text("Пример: iPhone 13, 500$")
             return
 
         name, price = text.split(",", 1)
@@ -235,19 +288,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             (user_id, result, context.user_data["category"], context.user_data.get("photo"))
         )
 
+        ad_id = cur.lastrowid
         conn.commit()
         conn.close()
 
-        # уведомление админу
-        await context.bot.send_message(
-            ADMIN_ID,
-            f"🆕 Новое объявление:\n{result}"
-        )
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❤️", callback_data=f"like_{ad_id}")],
+            [InlineKeyboardButton("⭐", callback_data=f"fav_{ad_id}")],
+            [InlineKeyboardButton("💬 Написать", callback_data=f"contact_{ad_id}")]
+        ])
 
         if context.user_data.get("photo"):
-            await context.bot.send_photo(CHANNEL_ID, context.user_data["photo"], caption=result)
+            await context.bot.send_photo(CHANNEL_ID, context.user_data["photo"], caption=result, reply_markup=keyboard)
         else:
-            await context.bot.send_message(CHANNEL_ID, result)
+            await context.bot.send_message(CHANNEL_ID, result, reply_markup=keyboard)
 
         await update.message.reply_text("Опубликовано 🚀", reply_markup=main_kb())
         context.user_data.clear()
@@ -259,13 +313,10 @@ init_db()
 app = ApplicationBuilder().token(TOKEN).build()
 
 app.add_handler(CommandHandler("start", start))
-app.add_handler(CommandHandler("admin", admin))
-app.add_handler(CommandHandler("all_ads", all_ads))
-app.add_handler(CommandHandler("delete", delete_ad))
-
 app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+app.add_handler(CallbackQueryHandler(buttons))
 
-print("🔥 BOT FINAL VERSION RUNNING")
+print("🚀 STARTUP BOT RUNNING")
 
 app.run_polling()
