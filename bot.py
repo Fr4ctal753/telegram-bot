@@ -1,6 +1,5 @@
 import sqlite3
 import os
-import asyncio
 
 from telegram import (
     Update,
@@ -60,7 +59,7 @@ def init_db():
     conn.close()
 
 
-# 🔹 клавиатура
+# 🔹 клавиатуры
 def main_kb():
     return ReplyKeyboardMarkup([
         ["➕ Подключить канал", "📡 Мои каналы"],
@@ -77,7 +76,7 @@ def back_kb():
 # 🚀 старт
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    # если /start в канале → сохраняем канал
+    # если написали в канале → сохраняем канал
     if update.effective_chat.type == "channel":
         channel_id = update.effective_chat.id
         user_id = update.effective_user.id if update.effective_user else None
@@ -88,7 +87,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             cur.execute("INSERT INTO channels VALUES (?,?)", (user_id, channel_id))
             conn.commit()
             conn.close()
-
         return
 
     await update.message.reply_text("🚀 Маркет бот", reply_markup=main_kb())
@@ -244,6 +242,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Что ищем?")
         return
 
+    # 🔎 поиск
     if context.user_data.get("search"):
         conn = sqlite3.connect("bot.db")
         cur = conn.cursor()
@@ -266,15 +265,17 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["search"] = False
         return
 
+    # 🆕 создать
     if text == "Создать":
         context.user_data["create"] = True
         await update.message.reply_text("Отправь фото", reply_markup=back_kb())
         return
 
+    # 📝 создание
     if context.user_data.get("create"):
 
         if "," not in text:
-            await update.message.reply_text("Пример: iPhone, 500$")
+            await update.message.reply_text("Пример: iPhone 13, 500$")
             return
 
         name, price = text.split(",", 1)
@@ -295,7 +296,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # 🚀 запуск
-async def main():
+if __name__ == "__main__":
     init_db()
 
     app = ApplicationBuilder().token(TOKEN).build()
@@ -307,8 +308,4 @@ async def main():
 
     print("🔥 BOT STARTED")
 
-    await app.run_polling()
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    app.run_polling()
