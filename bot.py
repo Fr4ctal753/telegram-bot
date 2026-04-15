@@ -130,41 +130,36 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect("bot.db")
     cur = conn.cursor()
 
-    # ❤️ лайк
     if action == "like":
         cur.execute("SELECT * FROM likes WHERE user_id=? AND ad_id=?", (user_id, ad_id))
         if cur.fetchone():
             await query.answer("Уже лайкал")
+            conn.close()
             return
 
         cur.execute("INSERT INTO likes VALUES (?,?)", (user_id, ad_id))
         cur.execute("UPDATE ads SET likes = likes + 1 WHERE id=?", (ad_id,))
         conn.commit()
 
-    # ⭐ избранное
     elif action == "fav":
         cur.execute("INSERT INTO favorites VALUES (?,?)", (user_id, ad_id))
         conn.commit()
         await query.answer("Добавлено ⭐")
 
-    # 🛒 покупка
     elif action == "buy":
         cur.execute("SELECT * FROM purchases WHERE user_id=? AND ad_id=?", (user_id, ad_id))
         if cur.fetchone():
-            await query.answer("Ты уже нажал 😄")
+            await query.answer("Уже нажимал 😄")
+            conn.close()
             return
 
         cur.execute("INSERT INTO purchases VALUES (?,?)", (user_id, ad_id))
         conn.commit()
 
-        # уведомление продавцу
         cur.execute("SELECT user_id FROM ads WHERE id=?", (ad_id,))
         seller = cur.fetchone()[0]
 
-        await context.bot.send_message(
-            seller,
-            "🔥 Твоим товаром заинтересовались!"
-        )
+        await context.bot.send_message(seller, "🔥 Кто-то хочет купить твой товар!")
 
         await query.answer("Свяжись с продавцом")
 
@@ -177,7 +172,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     context.user_data["photo"] = update.message.photo[-1].file_id
-    await update.message.reply_text("Теперь напиши название и цену")
+    await update.message.reply_text("Теперь напиши описание и цену\n\nПример:\nNike Air Max, 200$")
 
 
 # 💬 сообщения
@@ -197,7 +192,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text in ["👕 Одежда", "📱 Техника", "🚗 Авто"]:
         context.user_data["category"] = text
         context.user_data["create"] = True
-        await update.message.reply_text("Отправь фото", reply_markup=back_kb())
+        await update.message.reply_text("Отправь фото 📸", reply_markup=back_kb())
         return
 
     if text == "📄 Мои":
@@ -222,6 +217,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = cur.fetchall()
         conn.close()
 
+        if not data:
+            await update.message.reply_text("Ничего не найдено")
+            return
+
         for ad_id, t, photo in data:
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("❤️", callback_data=f"like_{ad_id}")],
@@ -239,14 +238,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # 📝 создание
     if context.user_data.get("create"):
-        parts = text.split()
-        if len(parts) < 2:
-            await update.message.reply_text("Пример: Nike 200$")
-            return
-
-        result = f"{parts[0]} — {parts[1]}"
         user_id = update.effective_user.id
         photo = context.user_data.get("photo")
+
+        # 🔥 разделение через запятую
+        if "," in text:
+            name, price = text.split(",", 1)
+            name = name.strip()
+            price = price.strip()
+        else:
+            parts = text.split()
+            if len(parts) < 2:
+                await update.message.reply_text("Пример: Nike Air Max, 200$")
+                return
+
+            price = parts[-1]
+            name = " ".join(parts[:-1])
+
+        result = f"{name} — {price}"
 
         conn = sqlite3.connect("bot.db")
         cur = conn.cursor()
@@ -286,6 +295,6 @@ app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 app.add_handler(CallbackQueryHandler(buttons))
 
-print("Bot V3 started 🚀")
+print("Bot V4 started 🚀")
 
 app.run_polling()
