@@ -1,4 +1,3 @@
-print("БОТ ЗАПУСТИЛСЯ")
 import sqlite3
 import os
 
@@ -70,8 +69,7 @@ def init_db():
 def main_kb():
     return ReplyKeyboardMarkup([
         ["Создать", "📄 Мои"],
-        ["🔍 Поиск", "⭐ Избранное"],
-        ["⭐ Мои отзывы"]
+        ["🔍 Поиск", "⭐ Мои отзывы"]
     ], resize_keyboard=True)
 
 
@@ -84,15 +82,29 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Меню", reply_markup=main_kb())
 
 
-# 📊 отзывы пользователя
+# 📄 мои объявления
+async def my_ads(update, context):
+    conn = sqlite3.connect("bot.db")
+    cur = conn.cursor()
+
+    cur.execute("SELECT text, likes FROM ads WHERE user_id = ?", (update.effective_user.id,))
+    ads = cur.fetchall()
+    conn.close()
+
+    if not ads:
+        await update.message.reply_text("Нет объявлений")
+        return
+
+    for text, likes in ads:
+        await update.message.reply_text(f"{text}\n❤️ {likes}")
+
+
+# ⭐ отзывы
 async def my_reviews(update, context):
     conn = sqlite3.connect("bot.db")
     cur = conn.cursor()
 
-    cur.execute("""
-    SELECT text, rating FROM reviews WHERE seller_id = ?
-    """, (update.effective_user.id,))
-
+    cur.execute("SELECT text, rating FROM reviews WHERE seller_id = ?", (update.effective_user.id,))
     data = cur.fetchall()
     conn.close()
 
@@ -101,13 +113,12 @@ async def my_reviews(update, context):
         return
 
     total = 0
-
     for text, rating in data:
         total += rating
         await update.message.reply_text(f"⭐ {rating}\n{text}")
 
     avg = total / len(data)
-    await update.message.reply_text(f"Средний рейтинг: {round(avg,2)} ⭐")
+    await update.message.reply_text(f"Средний рейтинг: {round(avg, 2)} ⭐")
 
 
 # 🔘 кнопки
@@ -122,6 +133,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect("bot.db")
     cur = conn.cursor()
 
+    # ❤️ лайк
     if action == "like":
         cur.execute("SELECT * FROM likes WHERE user_id=? AND ad_id=?", (user_id, ad_id))
         if cur.fetchone():
@@ -133,17 +145,18 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.execute("UPDATE ads SET likes = likes + 1 WHERE id=?", (ad_id,))
         conn.commit()
 
+    # 🛒 покупка
     elif action == "buy":
         cur.execute("SELECT * FROM purchases WHERE user_id=? AND ad_id=?", (user_id, ad_id))
         if cur.fetchone():
-            await query.answer("Уже купил 😄")
+            await query.answer("Уже нажал 😄")
             conn.close()
             return
 
         cur.execute("INSERT INTO purchases VALUES (?,?)", (user_id, ad_id))
         conn.commit()
 
-        # сохраняем состояние для отзыва
+        # сохраняем для отзыва
         context.user_data["review_ad"] = ad_id
 
         cur.execute("SELECT user_id FROM ads WHERE id=?", (ad_id,))
@@ -151,9 +164,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         context.user_data["review_seller"] = seller
 
-        await query.message.reply_text(
-            "Оставь отзыв (пример: Отличный товар, 5)"
-        )
+        await query.message.reply_text("Оставь отзыв (пример: Отличный товар, 5)")
 
     conn.close()
 
@@ -177,6 +188,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Меню", reply_markup=main_kb())
         return
 
+    if text == "📄 Мои":
+        await my_ads(update, context)
+        return
+
     if text == "⭐ Мои отзывы":
         await my_reviews(update, context)
         return
@@ -196,27 +211,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn = sqlite3.connect("bot.db")
         cur = conn.cursor()
 
-        # проверка повторного отзыва
-        cur.execute("""
-        SELECT * FROM reviews WHERE user_id=? AND ad_id=?
-        """, (user_id, ad_id))
-
+        cur.execute("SELECT * FROM reviews WHERE user_id=? AND ad_id=?", (user_id, ad_id))
         if cur.fetchone():
             await update.message.reply_text("Ты уже оставил отзыв")
             conn.close()
             context.user_data.clear()
             return
 
-        cur.execute("""
-        INSERT INTO reviews (seller_id, user_id, ad_id, text, rating)
-        VALUES (?, ?, ?, ?, ?)
-        """, (seller_id, user_id, ad_id, review_text.strip(), rating))
+        cur.execute(
+            "INSERT INTO reviews (seller_id, user_id, ad_id, text, rating) VALUES (?,?,?,?,?)",
+            (seller_id, user_id, ad_id, review_text.strip(), rating)
+        )
 
         conn.commit()
         conn.close()
 
         await update.message.reply_text("Спасибо за отзыв ⭐")
-
         context.user_data.clear()
         return
 
@@ -230,6 +240,38 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["category"] = text
         context.user_data["create"] = True
         await update.message.reply_text("Отправь фото", reply_markup=back_kb())
+        return
+
+    # 🔎 поиск
+    if text == "🔍 Поиск":
+        context.user_data["search"] = True
+        await update.message.reply_text("Что ищем?")
+        return
+
+    if context.user_data.get("search"):
+        conn = sqlite3.connect("bot.db")
+        cur = conn.cursor()
+
+        cur.execute("SELECT id, text, photo FROM ads WHERE text LIKE ?", (f"%{text}%",))
+        data = cur.fetchall()
+        conn.close()
+
+        if not data:
+            await update.message.reply_text("Ничего не найдено")
+            return
+
+        for ad_id, t, photo in data:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("❤️", callback_data=f"like_{ad_id}")],
+                [InlineKeyboardButton("🛒 Купить", callback_data=f"buy_{ad_id}")]
+            ])
+
+            if photo:
+                await update.message.reply_photo(photo, caption=t, reply_markup=keyboard)
+            else:
+                await update.message.reply_text(t, reply_markup=keyboard)
+
+        context.user_data["search"] = False
         return
 
     # 📝 создание
@@ -266,3 +308,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         await update.message.reply_text("Опубликовано 🚀", reply_markup=main_kb())
         context.user_data.clear()
+
+
+# 🚀 запуск
+init_db()
+
+app = ApplicationBuilder().token(TOKEN).build()
+
+app.add_handler(CommandHandler("start", start))
+app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+app.add_handler(CallbackQueryHandler(buttons))
+
+print("Bot started 🚀")
+
+app.run_polling()
