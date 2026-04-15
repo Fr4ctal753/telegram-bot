@@ -1,3 +1,4 @@
+print("БОТ ЗАПУСТИЛСЯ")
 import sqlite3
 import os
 
