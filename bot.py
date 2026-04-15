@@ -69,7 +69,8 @@ def init_db():
 def main_kb():
     return ReplyKeyboardMarkup([
         ["Создать", "📄 Мои"],
-        ["🔍 Поиск", "⭐ Мои отзывы"]
+        ["🔍 Поиск", "⭐ Отзывы"],
+        ["💬 Чаты"]
     ], resize_keyboard=True)
 
 
@@ -87,7 +88,7 @@ async def my_ads(update, context):
     conn = sqlite3.connect("bot.db")
     cur = conn.cursor()
 
-    cur.execute("SELECT text, likes FROM ads WHERE user_id = ?", (update.effective_user.id,))
+    cur.execute("SELECT text, likes FROM ads WHERE user_id=?", (update.effective_user.id,))
     ads = cur.fetchall()
     conn.close()
 
@@ -104,21 +105,16 @@ async def my_reviews(update, context):
     conn = sqlite3.connect("bot.db")
     cur = conn.cursor()
 
-    cur.execute("SELECT text, rating FROM reviews WHERE seller_id = ?", (update.effective_user.id,))
+    cur.execute("SELECT text, rating FROM reviews WHERE seller_id=?", (update.effective_user.id,))
     data = cur.fetchall()
     conn.close()
 
     if not data:
-        await update.message.reply_text("У тебя нет отзывов")
+        await update.message.reply_text("Нет отзывов")
         return
 
-    total = 0
     for text, rating in data:
-        total += rating
         await update.message.reply_text(f"⭐ {rating}\n{text}")
-
-    avg = total / len(data)
-    await update.message.reply_text(f"Средний рейтинг: {round(avg, 2)} ⭐")
 
 
 # 🔘 кнопки
@@ -149,22 +145,20 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif action == "buy":
         cur.execute("SELECT * FROM purchases WHERE user_id=? AND ad_id=?", (user_id, ad_id))
         if cur.fetchone():
-            await query.answer("Уже нажал 😄")
+            await query.answer("Уже нажал")
             conn.close()
             return
 
         cur.execute("INSERT INTO purchases VALUES (?,?)", (user_id, ad_id))
         conn.commit()
 
-        # сохраняем для отзыва
-        context.user_data["review_ad"] = ad_id
-
         cur.execute("SELECT user_id FROM ads WHERE id=?", (ad_id,))
         seller = cur.fetchone()[0]
 
-        context.user_data["review_seller"] = seller
+        # запускаем чат
+        context.user_data["chat_with"] = seller
 
-        await query.message.reply_text("Оставь отзыв (пример: Отличный товар, 5)")
+        await query.message.reply_text("💬 Напиши сообщение продавцу")
 
     conn.close()
 
@@ -188,58 +182,26 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Меню", reply_markup=main_kb())
         return
 
+    # 📄 мои
     if text == "📄 Мои":
         await my_ads(update, context)
         return
 
-    if text == "⭐ Мои отзывы":
+    # ⭐ отзывы
+    if text == "⭐ Отзывы":
         await my_reviews(update, context)
         return
 
-    # ⭐ отзыв
-    if context.user_data.get("review_ad"):
-        if "," not in text:
-            await update.message.reply_text("Пример: Хороший товар, 5")
-            return
+    # 💬 чат
+    if context.user_data.get("chat_with"):
+        seller = context.user_data["chat_with"]
 
-        review_text, rating = text.split(",", 1)
-        rating = int(rating.strip())
-
-        ad_id = context.user_data["review_ad"]
-        seller_id = context.user_data["review_seller"]
-
-        conn = sqlite3.connect("bot.db")
-        cur = conn.cursor()
-
-        cur.execute("SELECT * FROM reviews WHERE user_id=? AND ad_id=?", (user_id, ad_id))
-        if cur.fetchone():
-            await update.message.reply_text("Ты уже оставил отзыв")
-            conn.close()
-            context.user_data.clear()
-            return
-
-        cur.execute(
-            "INSERT INTO reviews (seller_id, user_id, ad_id, text, rating) VALUES (?,?,?,?,?)",
-            (seller_id, user_id, ad_id, review_text.strip(), rating)
+        await context.bot.send_message(
+            seller,
+            f"💬 Сообщение от покупателя:\n{text}"
         )
 
-        conn.commit()
-        conn.close()
-
-        await update.message.reply_text("Спасибо за отзыв ⭐")
-        context.user_data.clear()
-        return
-
-    # 🆕 создать
-    if text == "Создать":
-        keyboard = [["👕 Одежда", "📱 Техника"], ["🚗 Авто"]]
-        await update.message.reply_text("Выбери категорию", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
-        return
-
-    if text in ["👕 Одежда", "📱 Техника", "🚗 Авто"]:
-        context.user_data["category"] = text
-        context.user_data["create"] = True
-        await update.message.reply_text("Отправь фото", reply_markup=back_kb())
+        await update.message.reply_text("Отправлено ✅")
         return
 
     # 🔎 поиск
@@ -272,6 +234,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(t, reply_markup=keyboard)
 
         context.user_data["search"] = False
+        return
+
+    # 🆕 создать
+    if text == "Создать":
+        keyboard = [["👕 Одежда", "📱 Техника"], ["🚗 Авто"]]
+        await update.message.reply_text("Выбери категорию", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
+        return
+
+    if text in ["👕 Одежда", "📱 Техника", "🚗 Авто"]:
+        context.user_data["category"] = text
+        context.user_data["create"] = True
+        await update.message.reply_text("Отправь фото", reply_markup=back_kb())
         return
 
     # 📝 создание
@@ -320,6 +294,6 @@ app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 app.add_handler(CallbackQueryHandler(buttons))
 
-print("Bot started 🚀")
+print("Bot FULL started 🚀")
 
 app.run_polling()
