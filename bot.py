@@ -12,6 +12,7 @@ from telegram.ext import (
     MessageHandler,
     CommandHandler,
     CallbackQueryHandler,
+    ChatMemberHandler,
     filters,
     ContextTypes
 )
@@ -50,8 +51,7 @@ def init_db():
 
     cur.execute("""
     CREATE TABLE IF NOT EXISTS channels (
-        user_id INTEGER,
-        channel_id INTEGER
+        chat_id INTEGER UNIQUE
     )
     """)
 
@@ -59,10 +59,26 @@ def init_db():
     conn.close()
 
 
+# 📡 авто добавление канала
+async def track_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat = update.my_chat_member.chat
+
+    if chat.type == "channel":
+        chat_id = chat.id
+
+        conn = sqlite3.connect("bot.db")
+        cur = conn.cursor()
+
+        cur.execute("INSERT OR IGNORE INTO channels (chat_id) VALUES (?)", (chat_id,))
+        conn.commit()
+        conn.close()
+
+        print(f"✅ Канал добавлен: {chat_id}")
+
+
 # 🔹 клавиатуры
 def main_kb():
     return ReplyKeyboardMarkup([
-        ["➕ Подключить канал", "📡 Мои каналы"],
         ["Создать", "📄 Мои"],
         ["🔍 Поиск", "⭐ Избранное"],
         ["🏆 Топ"]
@@ -75,38 +91,7 @@ def back_kb():
 
 # 🚀 старт
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
-    # если написали в канале → сохраняем канал
-    if update.effective_chat.type == "channel":
-        channel_id = update.effective_chat.id
-        user_id = update.effective_user.id if update.effective_user else None
-
-        if user_id:
-            conn = sqlite3.connect("bot.db")
-            cur = conn.cursor()
-            cur.execute("INSERT INTO channels VALUES (?,?)", (user_id, channel_id))
-            conn.commit()
-            conn.close()
-        return
-
     await update.message.reply_text("🚀 Маркет бот", reply_markup=main_kb())
-
-
-# 📡 мои каналы
-async def my_channels(update, context):
-    conn = sqlite3.connect("bot.db")
-    cur = conn.cursor()
-
-    cur.execute("SELECT channel_id FROM channels WHERE user_id=?", (update.effective_user.id,))
-    data = cur.fetchall()
-    conn.close()
-
-    if not data:
-        await update.message.reply_text("Нет каналов")
-        return
-
-    for (cid,) in data:
-        await update.message.reply_text(f"Канал ID: {cid}")
 
 
 # 📄 мои объявления
@@ -156,10 +141,6 @@ async def top(update, context):
     cur.execute("SELECT text, likes FROM ads ORDER BY likes DESC LIMIT 5")
     data = cur.fetchall()
     conn.close()
-
-    if not data:
-        await update.message.reply_text("Пока пусто")
-        return
 
     for text, likes in data:
         await update.message.reply_text(f"{text}\n❤️ {likes}")
@@ -213,16 +194,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if text == "⬅️ Назад":
         context.user_data.clear()
         await update.message.reply_text("Меню", reply_markup=main_kb())
-        return
-
-    if text == "➕ Подключить канал":
-        await update.message.reply_text(
-            "Добавь бота в канал → сделай админом → напиши /start в канале"
-        )
-        return
-
-    if text == "📡 Мои каналы":
-        await my_channels(update, context)
         return
 
     if text == "📄 Мои":
@@ -287,11 +258,33 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.execute("INSERT INTO ads (user_id, text, photo) VALUES (?,?,?)",
                     (user_id, result, context.user_data.get("photo")))
 
+        ad_id = cur.lastrowid
+
+        # отправка во все каналы где пользователь админ
+        cur.execute("SELECT chat_id FROM channels")
+        channels = cur.fetchall()
+
         conn.commit()
         conn.close()
 
-        await update.message.reply_text("Объявление создано 🚀")
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❤️", callback_data=f"like_{ad_id}")],
+            [InlineKeyboardButton("⭐", callback_data=f"fav_{ad_id}")]
+        ])
 
+        for (chat_id,) in channels:
+            try:
+                member = await context.bot.get_chat_member(chat_id, user_id)
+
+                if member.status in ["administrator", "creator"]:
+                    if context.user_data.get("photo"):
+                        await context.bot.send_photo(chat_id, context.user_data["photo"], caption=result, reply_markup=keyboard)
+                    else:
+                        await context.bot.send_message(chat_id, result, reply_markup=keyboard)
+            except:
+                pass
+
+        await update.message.reply_text("Объявление опубликовано 🚀", reply_markup=main_kb())
         context.user_data.clear()
 
 
@@ -305,6 +298,7 @@ if __name__ == "__main__":
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(buttons))
+    app.add_handler(ChatMemberHandler(track_channel, ChatMemberHandler.MY_CHAT_MEMBER))
 
     print("🔥 BOT STARTED")
 
