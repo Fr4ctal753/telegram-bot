@@ -78,7 +78,7 @@ def back_kb():
 # 🚀 старт
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-    # 📡 если в канале → сохраняем
+    # если /start в канале → сохраняем канал
     if update.effective_chat.type == "channel":
         channel_id = update.effective_chat.id
         user_id = update.effective_user.id if update.effective_user else None
@@ -86,9 +86,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user_id:
             conn = sqlite3.connect("bot.db")
             cur = conn.cursor()
-
             cur.execute("INSERT INTO channels VALUES (?,?)", (user_id, channel_id))
-
             conn.commit()
             conn.close()
 
@@ -174,6 +172,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.execute("SELECT * FROM likes WHERE user_id=? AND ad_id=?", (user_id, ad_id))
         if cur.fetchone():
             await query.answer("Уже лайкал")
+            conn.close()
             return
 
         cur.execute("INSERT INTO likes VALUES (?,?)", (user_id, ad_id))
@@ -209,7 +208,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if text == "➕ Подключить канал":
         await update.message.reply_text(
-            "1. Добавь бота в канал\n2. Сделай админом\n3. Напиши /start в канале"
+            "Добавь бота в канал → сделай админом → напиши /start в канале"
         )
         return
 
@@ -271,6 +270,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         cur.execute("INSERT INTO ads (user_id, text, photo) VALUES (?,?,?)",
                     (user_id, result, context.user_data.get("photo")))
+
         conn.commit()
         conn.close()
 
@@ -279,7 +279,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
 
 
-# 🔥 авто реклама во ВСЕ каналы пользователя
+# 🔥 авто реклама
 async def auto_ads(app):
     while True:
         await asyncio.sleep(60)
@@ -313,18 +313,24 @@ async def auto_ads(app):
         conn.close()
 
 
-# 🚀 запуск
-init_db()
+# 🚀 главный запуск
+async def main():
+    init_db()
 
-app = ApplicationBuilder().token(TOKEN).build()
+    app = ApplicationBuilder().token(TOKEN).build()
 
-app.add_handler(CommandHandler("start", start))
-app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-app.add_handler(CallbackQueryHandler(buttons))
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    app.add_handler(CallbackQueryHandler(buttons))
 
-app.job_queue.run_once(lambda ctx: asyncio.create_task(auto_ads(app)), 1)
+    print("🔥 BOT STARTED")
 
-print("🔥 BOT FINAL STARTED")
+    # запускаем авто рекламу
+    asyncio.create_task(auto_ads(app))
 
-app.run_polling()
+    await app.run_polling()
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
