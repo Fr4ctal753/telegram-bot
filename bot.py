@@ -31,7 +31,15 @@ def init_db():
         user_id INTEGER,
         text TEXT,
         photo TEXT,
+        category TEXT,
         likes INTEGER DEFAULT 0
+    )
+    """)
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS likes (
+        user_id INTEGER,
+        ad_id INTEGER
     )
     """)
 
@@ -96,23 +104,50 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect("bot.db")
     cursor = conn.cursor()
 
+    # ❌ удалить
     if action == "del":
         cursor.execute("DELETE FROM ads WHERE id = ?", (index,))
         conn.commit()
         await query.edit_message_text("Удалено")
 
+    # ❤️ лайк (1 раз)
     elif action == "like":
-        cursor.execute("UPDATE ads SET likes = likes + 1 WHERE id = ?", (index,))
+        user_id = query.from_user.id
+
+        cursor.execute(
+            "SELECT * FROM likes WHERE user_id = ? AND ad_id = ?",
+            (user_id, index)
+        )
+
+        if cursor.fetchone():
+            await query.answer("Ты уже лайкнул 😎", show_alert=True)
+            conn.close()
+            return
+
+        cursor.execute(
+            "INSERT INTO likes (user_id, ad_id) VALUES (?, ?)",
+            (user_id, index)
+        )
+
+        cursor.execute(
+            "UPDATE ads SET likes = likes + 1 WHERE id = ?",
+            (index,)
+        )
+
         conn.commit()
 
         cursor.execute("SELECT likes FROM ads WHERE id = ?", (index,))
         likes = cursor.fetchone()[0]
 
-        keyboard = InlineKeyboardMarkup([[ 
+        keyboard = InlineKeyboardMarkup([[
             InlineKeyboardButton(f"❤️ {likes}", callback_data=f"like_{index}")
         ]])
 
         await query.edit_message_reply_markup(reply_markup=keyboard)
+
+    # 🛒 купить
+    elif action == "buy":
+        await query.message.reply_text("Свяжись с продавцом 👇")
 
     conn.close()
 
@@ -128,33 +163,48 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Теперь напиши название и цену (пример: Nike 200$)")
 
 
-# 💬 сообщения (главная логика)
+# 💬 сообщения
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
 
+    # назад
     if text == "⬅️ Назад":
         context.user_data.clear()
         await update.message.reply_text("Меню", reply_markup=get_main_keyboard())
         return
 
-    # 🆕 создать
+    # создать
     if text == "Создать":
-        context.user_data["create"] = True
-        await update.message.reply_text("Отправь фото товара 📸", reply_markup=get_back_keyboard())
+        keyboard = [
+            ["👕 Одежда", "📱 Техника"],
+            ["🚗 Авто"],
+            ["⬅️ Назад"]
+        ]
+        await update.message.reply_text(
+            "Выбери категорию",
+            reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+        )
         return
 
-    # 📄 мои
+    # выбор категории
+    if text in ["👕 Одежда", "📱 Техника", "🚗 Авто"]:
+        context.user_data["category"] = text
+        context.user_data["create"] = True
+        await update.message.reply_text("Отправь фото 📸", reply_markup=get_back_keyboard())
+        return
+
+    # мои
     if text == "📄 Мои":
         await show_ads(update, context)
         return
 
-    # 🔎 поиск
+    # поиск
     if text == "🔍 Поиск":
         context.user_data["search"] = True
         await update.message.reply_text("Напиши что искать")
         return
 
-    # 🔎 логика поиска
+    # логика поиска
     if context.user_data.get("search"):
         conn = sqlite3.connect("bot.db")
         cursor = conn.cursor()
@@ -176,7 +226,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["search"] = False
         return
 
-    # 📝 создание (ПОСЛЕ ФОТО)
+    # создание объявления
     if context.user_data.get("create"):
         parts = text.split()
 
@@ -187,13 +237,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         result = f"{parts[0]} — {parts[1]}"
         user_id = update.effective_user.id
         photo = context.user_data.get("photo")
+        category = context.user_data.get("category")
 
         conn = sqlite3.connect("bot.db")
         cursor = conn.cursor()
 
         cursor.execute(
-            "INSERT INTO ads (user_id, text, photo) VALUES (?, ?, ?)",
-            (user_id, result, photo)
+            "INSERT INTO ads (user_id, text, photo, category) VALUES (?, ?, ?, ?)",
+            (user_id, result, photo, category)
         )
 
         ad_id = cursor.lastrowid
@@ -201,12 +252,16 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         conn.close()
 
-        keyboard = InlineKeyboardMarkup([[ 
-            InlineKeyboardButton("💬 Написать", url=f"tg://user?id={user_id}"),
-            InlineKeyboardButton("❤️ 0", callback_data=f"like_{ad_id}")
-        ]])
+        keyboard = InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("💬 Написать", url=f"tg://user?id={user_id}"),
+                InlineKeyboardButton("🛒 Купить", callback_data=f"buy_{ad_id}")
+            ],
+            [
+                InlineKeyboardButton("❤️ 0", callback_data=f"like_{ad_id}")
+            ]
+        ])
 
-        # 🚀 в канал
         if photo:
             await context.bot.send_photo(CHANNEL_ID, photo, caption=result, reply_markup=keyboard)
         else:
@@ -227,6 +282,6 @@ app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 app.add_handler(CallbackQueryHandler(buttons))
 
-print("Bot started v2 🚀")
+print("Bot started FINAL 🚀")
 
 app.run_polling()
