@@ -61,6 +61,12 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS subscribers (
+        user_id INTEGER
+    )
+    """)
+
     conn.commit()
     conn.close()
 
@@ -69,8 +75,8 @@ def init_db():
 def main_kb():
     return ReplyKeyboardMarkup([
         ["Создать", "📄 Мои"],
-        ["🔍 Поиск", "⭐ Отзывы"],
-        ["💬 Чаты"]
+        ["🔍 Поиск", "⭐ Избранное"],
+        ["⭐ Отзывы", "🔔 Подписка"]
     ], resize_keyboard=True)
 
 
@@ -81,6 +87,24 @@ def back_kb():
 # 🚀 старт
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Меню", reply_markup=main_kb())
+
+
+# 🔔 подписка
+async def subscribe(update, context):
+    conn = sqlite3.connect("bot.db")
+    cur = conn.cursor()
+
+    user_id = update.effective_user.id
+
+    cur.execute("SELECT * FROM subscribers WHERE user_id=?", (user_id,))
+    if cur.fetchone():
+        await update.message.reply_text("Ты уже подписан 🔔")
+    else:
+        cur.execute("INSERT INTO subscribers VALUES (?)", (user_id,))
+        conn.commit()
+        await update.message.reply_text("Подписка включена 🔔")
+
+    conn.close()
 
 
 # 📄 мои объявления
@@ -113,8 +137,12 @@ async def my_reviews(update, context):
         await update.message.reply_text("Нет отзывов")
         return
 
+    total = 0
     for text, rating in data:
-        await update.message.reply_text(f"⭐ {rating}\n{text}")
+        total += rating
+        await update.message.reply_text(f"{text} ⭐{rating}")
+
+    await update.message.reply_text(f"Средний рейтинг: {round(total/len(data),2)} ⭐")
 
 
 # 🔘 кнопки
@@ -152,13 +180,19 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         cur.execute("INSERT INTO purchases VALUES (?,?)", (user_id, ad_id))
         conn.commit()
 
+        # автоуведомление продавцу
         cur.execute("SELECT user_id FROM ads WHERE id=?", (ad_id,))
         seller = cur.fetchone()[0]
 
-        # запускаем чат
-        context.user_data["chat_with"] = seller
+        await context.bot.send_message(
+            seller,
+            "📩 У тебя новый покупатель! Напиши ему первым"
+        )
 
-        await query.message.reply_text("💬 Напиши сообщение продавцу")
+        context.user_data["review_ad"] = ad_id
+        context.user_data["review_seller"] = seller
+
+        await query.message.reply_text("Напиши отзыв: текст, оценка (например: круто, 5)")
 
     conn.close()
 
@@ -169,7 +203,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     context.user_data["photo"] = update.message.photo[-1].file_id
-    await update.message.reply_text("Теперь напиши описание и цену (Nike Air, 200$)")
+    await update.message.reply_text("Теперь напиши: название, цена (через запятую)")
 
 
 # 💬 сообщения
@@ -182,61 +216,41 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Меню", reply_markup=main_kb())
         return
 
-    # 📄 мои
+    if text == "🔔 Подписка":
+        await subscribe(update, context)
+        return
+
     if text == "📄 Мои":
         await my_ads(update, context)
         return
 
-    # ⭐ отзывы
     if text == "⭐ Отзывы":
         await my_reviews(update, context)
         return
 
-    # 💬 чат
-    if context.user_data.get("chat_with"):
-        seller = context.user_data["chat_with"]
+    # ⭐ отзыв
+    if context.user_data.get("review_ad"):
+        if "," not in text:
+            await update.message.reply_text("Пример: отлично, 5")
+            return
 
-        await context.bot.send_message(
-            seller,
-            f"💬 Сообщение от покупателя:\n{text}"
-        )
+        t, r = text.split(",", 1)
 
-        await update.message.reply_text("Отправлено ✅")
-        return
-
-    # 🔎 поиск
-    if text == "🔍 Поиск":
-        context.user_data["search"] = True
-        await update.message.reply_text("Что ищем?")
-        return
-
-    if context.user_data.get("search"):
         conn = sqlite3.connect("bot.db")
         cur = conn.cursor()
 
-        cur.execute("SELECT id, text, photo FROM ads WHERE text LIKE ?", (f"%{text}%",))
-        data = cur.fetchall()
+        cur.execute("INSERT INTO reviews VALUES (NULL,?,?,?,?,?)",
+                    (context.user_data["review_seller"], user_id,
+                     context.user_data["review_ad"], t.strip(), int(r.strip())))
+
+        conn.commit()
         conn.close()
 
-        if not data:
-            await update.message.reply_text("Ничего не найдено")
-            return
-
-        for ad_id, t, photo in data:
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("❤️", callback_data=f"like_{ad_id}")],
-                [InlineKeyboardButton("🛒 Купить", callback_data=f"buy_{ad_id}")]
-            ])
-
-            if photo:
-                await update.message.reply_photo(photo, caption=t, reply_markup=keyboard)
-            else:
-                await update.message.reply_text(t, reply_markup=keyboard)
-
-        context.user_data["search"] = False
+        await update.message.reply_text("Отзыв сохранен ⭐")
+        context.user_data.clear()
         return
 
-    # 🆕 создать
+    # 🆕 создание
     if text == "Создать":
         keyboard = [["👕 Одежда", "📱 Техника"], ["🚗 Авто"]]
         await update.message.reply_text("Выбери категорию", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
@@ -266,7 +280,20 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
 
         ad_id = cur.lastrowid
+
         conn.commit()
+
+        # 🔔 уведомления
+        cur.execute("SELECT user_id FROM subscribers")
+        subs = cur.fetchall()
+
+        for (uid,) in subs:
+            if uid != user_id:
+                try:
+                    await context.bot.send_message(uid, f"🔥 Новое объявление:\n{result}")
+                except:
+                    pass
+
         conn.close()
 
         keyboard = InlineKeyboardMarkup([
@@ -294,6 +321,6 @@ app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 app.add_handler(CallbackQueryHandler(buttons))
 
-print("Bot FULL started 🚀")
+print("БОТ ЗАПУСТИЛСЯ 🚀")
 
 app.run_polling()
