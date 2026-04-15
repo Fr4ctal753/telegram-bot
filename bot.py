@@ -18,16 +18,6 @@ from telegram.ext import (
 
 TOKEN = os.getenv("BOT_TOKEN")
 
-# 🔥 список каналов
-CHANNEL_IDS = [
-    -1003685752199, -1002837639684]
-    # добавь сюда другие каналы
-]
-
-ADMIN_ID = 6116012945
-
-BAD_WORDS = ["казино", "ставки", "секс", "18+", "http", "https", "t.me"]
-
 
 # 🧠 БД
 def init_db():
@@ -39,10 +29,8 @@ def init_db():
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         user_id INTEGER,
         text TEXT,
-        category TEXT,
         photo TEXT,
-        likes INTEGER DEFAULT 0,
-        views INTEGER DEFAULT 0
+        likes INTEGER DEFAULT 0
     )
     """)
 
@@ -60,27 +48,18 @@ def init_db():
     )
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS channels (
+        user_id INTEGER,
+        channel_id INTEGER
+    )
+    """)
+
     conn.commit()
     conn.close()
 
 
-# 🤖 фильтр
-def ai_filter(text):
-    text = text.lower()
-
-    if len(text) < 5:
-        return False
-
-    if any(word in text for word in BAD_WORDS):
-        return False
-
-    if text.count("$") > 3:
-        return False
-
-    return True
-
-
-# 🔹 клавиатуры
+# 🔹 клавиатура
 def main_kb():
     return ReplyKeyboardMarkup([
         ["Создать", "📄 Мои"],
@@ -95,6 +74,24 @@ def back_kb():
 
 # 🚀 старт
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    # 📡 если команда из канала → авто подключение
+    if update.effective_chat.type == "channel":
+        channel_id = update.effective_chat.id
+        user_id = update.effective_user.id if update.effective_user else None
+
+        if user_id:
+            conn = sqlite3.connect("bot.db")
+            cur = conn.cursor()
+
+            cur.execute("DELETE FROM channels WHERE user_id=?", (user_id,))
+            cur.execute("INSERT INTO channels VALUES (?,?)", (user_id, channel_id))
+
+            conn.commit()
+            conn.close()
+
+        return
+
     await update.message.reply_text("🚀 Маркетплейс бот", reply_markup=main_kb())
 
 
@@ -103,7 +100,7 @@ async def my_ads(update, context):
     conn = sqlite3.connect("bot.db")
     cur = conn.cursor()
 
-    cur.execute("SELECT text, likes, views FROM ads WHERE user_id=?", (update.effective_user.id,))
+    cur.execute("SELECT text, likes FROM ads WHERE user_id=?", (update.effective_user.id,))
     ads = cur.fetchall()
     conn.close()
 
@@ -111,8 +108,8 @@ async def my_ads(update, context):
         await update.message.reply_text("Нет объявлений")
         return
 
-    for text, likes, views in ads:
-        await update.message.reply_text(f"{text}\n❤️ {likes} 👁 {views}")
+    for text, likes in ads:
+        await update.message.reply_text(f"{text}\n❤️ {likes}")
 
 
 # ⭐ избранное
@@ -128,6 +125,10 @@ async def favs(update, context):
 
     data = cur.fetchall()
     conn.close()
+
+    if not data:
+        await update.message.reply_text("Пусто")
+        return
 
     for (text,) in data:
         await update.message.reply_text(text)
@@ -158,6 +159,7 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     conn = sqlite3.connect("bot.db")
     cur = conn.cursor()
 
+    # ❤️ лайк
     if action == "like":
         cur.execute("SELECT * FROM likes WHERE user_id=? AND ad_id=?", (user_id, ad_id))
         if cur.fetchone():
@@ -165,21 +167,23 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
 
         cur.execute("INSERT INTO likes VALUES (?,?)", (user_id, ad_id))
-        cur.execute("UPDATE ads SET likes=likes+1 WHERE id=?", (ad_id,))
+        cur.execute("UPDATE ads SET likes = likes + 1 WHERE id=?", (ad_id,))
         conn.commit()
 
+    # ⭐ избранное
     elif action == "fav":
         cur.execute("INSERT INTO favorites VALUES (?,?)", (user_id, ad_id))
         conn.commit()
         await query.answer("Добавлено ⭐")
 
+    # 💬 контакт
     elif action == "contact":
         cur.execute("SELECT user_id FROM ads WHERE id=?", (ad_id,))
         seller = cur.fetchone()[0]
 
         await context.bot.send_message(
             seller,
-            f"💬 Тебе написал покупатель: @{query.from_user.username}"
+            f"💬 @{query.from_user.username} хочет купить товар!"
         )
 
     conn.close()
@@ -191,19 +195,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     context.user_data["photo"] = update.message.photo[-1].file_id
-    await update.message.reply_text("Теперь напиши: описание, цена")
-
-
-# 🚀 отправка во все каналы
-async def send_to_channels(context, photo, text, keyboard):
-    for channel in CHANNEL_IDS:
-        try:
-            if photo:
-                await context.bot.send_photo(channel, photo, caption=text, reply_markup=keyboard)
-            else:
-                await context.bot.send_message(channel, text, reply_markup=keyboard)
-        except Exception as e:
-            print(f"Ошибка отправки в канал {channel}: {e}")
+    await update.message.reply_text("Теперь напиши: описание, цена (через запятую)")
 
 
 # 💬 сообщения
@@ -233,6 +225,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Что ищем?")
         return
 
+    # 🔎 поиск
     if context.user_data.get("search"):
         conn = sqlite3.connect("bot.db")
         cur = conn.cursor()
@@ -253,23 +246,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data["search"] = False
         return
 
+    # 🆕 создать
     if text == "Создать":
-        keyboard = [["👕 Одежда", "📱 Техника"], ["🚗 Авто"]]
-        await update.message.reply_text("Выбери категорию", reply_markup=ReplyKeyboardMarkup(keyboard, resize_keyboard=True))
-        return
-
-    if text in ["👕 Одежда", "📱 Техника", "🚗 Авто"]:
-        context.user_data["category"] = text
         context.user_data["create"] = True
         await update.message.reply_text("Отправь фото", reply_markup=back_kb())
         return
 
-    # 🧠 создание
+    # 🧠 создание объявления
     if context.user_data.get("create"):
-
-        if not ai_filter(text):
-            await update.message.reply_text("❌ Отклонено")
-            return
 
         if "," not in text:
             await update.message.reply_text("Пример: iPhone 13, 500$")
@@ -281,9 +265,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn = sqlite3.connect("bot.db")
         cur = conn.cursor()
 
+        # 🔒 проверяем канал пользователя
+        cur.execute("SELECT channel_id FROM channels WHERE user_id=?", (user_id,))
+        channel = cur.fetchone()
+
+        if not channel:
+            await update.message.reply_text("❌ Сначала добавь бота в канал и напиши /start там")
+            return
+
+        channel_id = channel[0]
+
         cur.execute(
-            "INSERT INTO ads (user_id, text, category, photo) VALUES (?,?,?,?)",
-            (user_id, result, context.user_data["category"], context.user_data.get("photo"))
+            "INSERT INTO ads (user_id, text, photo) VALUES (?,?,?)",
+            (user_id, result, context.user_data.get("photo"))
         )
 
         ad_id = cur.lastrowid
@@ -296,10 +290,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💬 Написать", callback_data=f"contact_{ad_id}")]
         ])
 
-        # 🔥 отправка во все каналы
-        await send_to_channels(context, context.user_data.get("photo"), result, keyboard)
+        # 🚀 отправка
+        if context.user_data.get("photo"):
+            await context.bot.send_photo(channel_id, context.user_data["photo"], caption=result, reply_markup=keyboard)
+        else:
+            await context.bot.send_message(channel_id, result, reply_markup=keyboard)
 
-        await update.message.reply_text("Опубликовано во все каналы 🚀", reply_markup=main_kb())
+        await update.message.reply_text("Опубликовано 🚀", reply_markup=main_kb())
         context.user_data.clear()
 
 
@@ -313,6 +310,6 @@ app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 app.add_handler(CallbackQueryHandler(buttons))
 
-print("🚀 MULTI CHANNEL BOT RUNNING")
+print("🔥 FINAL BOT STARTED")
 
 app.run_polling()
