@@ -31,8 +31,7 @@ def init_db():
         user_id INTEGER,
         text TEXT,
         photo TEXT,
-        likes INTEGER DEFAULT 0,
-        sent INTEGER DEFAULT 0
+        likes INTEGER DEFAULT 0
     )
     """)
 
@@ -121,6 +120,10 @@ async def my_ads(update, context):
     data = cur.fetchall()
     conn.close()
 
+    if not data:
+        await update.message.reply_text("Нет объявлений")
+        return
+
     for text, likes in data:
         await update.message.reply_text(f"{text}\n❤️ {likes}")
 
@@ -139,6 +142,10 @@ async def favs(update, context):
     data = cur.fetchall()
     conn.close()
 
+    if not data:
+        await update.message.reply_text("Пусто")
+        return
+
     for (text,) in data:
         await update.message.reply_text(text)
 
@@ -151,6 +158,10 @@ async def top(update, context):
     cur.execute("SELECT text, likes FROM ads ORDER BY likes DESC LIMIT 5")
     data = cur.fetchall()
     conn.close()
+
+    if not data:
+        await update.message.reply_text("Пока пусто")
+        return
 
     for text, likes in data:
         await update.message.reply_text(f"{text}\n❤️ {likes}")
@@ -241,6 +252,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data = cur.fetchall()
         conn.close()
 
+        if not data:
+            await update.message.reply_text("Ничего не найдено")
+            return
+
         for ad_id, t in data:
             keyboard = InlineKeyboardMarkup([
                 [InlineKeyboardButton("❤️", callback_data=f"like_{ad_id}")],
@@ -279,41 +294,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.clear()
 
 
-# 🔥 авто реклама
-async def auto_ads(app):
-    while True:
-        await asyncio.sleep(60)
-
-        conn = sqlite3.connect("bot.db")
-        cur = conn.cursor()
-
-        cur.execute("SELECT id, text, photo, user_id FROM ads WHERE sent=0 LIMIT 1")
-        ad = cur.fetchone()
-
-        if not ad:
-            conn.close()
-            continue
-
-        ad_id, text, photo, owner = ad
-
-        cur.execute("SELECT channel_id FROM channels WHERE user_id=?", (owner,))
-        channels = cur.fetchall()
-
-        for (cid,) in channels:
-            try:
-                if photo:
-                    await app.bot.send_photo(cid, photo, caption=f"🔥 {text}")
-                else:
-                    await app.bot.send_message(cid, f"🔥 {text}")
-            except:
-                pass
-
-        cur.execute("UPDATE ads SET sent=1 WHERE id=?", (ad_id,))
-        conn.commit()
-        conn.close()
-
-
-# 🚀 главный запуск
+# 🚀 запуск
 async def main():
     init_db()
 
@@ -325,9 +306,6 @@ async def main():
     app.add_handler(CallbackQueryHandler(buttons))
 
     print("🔥 BOT STARTED")
-
-    # запускаем авто рекламу
-    asyncio.create_task(auto_ads(app))
 
     await app.run_polling()
 
