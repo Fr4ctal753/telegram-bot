@@ -17,8 +17,14 @@ from telegram.ext import (
 )
 
 TOKEN = os.getenv("BOT_TOKEN")
-CHANNEL_ID = -1003685752199
-ADMIN_ID = 6116012945  # 👈 вставь свой id
+
+# 🔥 список каналов
+CHANNEL_IDS = [
+    -1003685752199, -1002837639684 ]
+    # добавь сюда другие каналы
+]
+
+ADMIN_ID = 6116012945
 
 BAD_WORDS = ["казино", "ставки", "секс", "18+", "http", "https", "t.me"]
 
@@ -54,19 +60,11 @@ def init_db():
     )
     """)
 
-    cur.execute("""
-    CREATE TABLE IF NOT EXISTS reviews (
-        seller_id INTEGER,
-        user_id INTEGER,
-        rating INTEGER
-    )
-    """)
-
     conn.commit()
     conn.close()
 
 
-# 🤖 AI фильтр
+# 🤖 фильтр
 def ai_filter(text):
     text = text.lower()
 
@@ -100,32 +98,20 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🚀 Маркетплейс бот", reply_markup=main_kb())
 
 
-# 📊 рейтинг продавца
-def get_rating(seller_id):
-    conn = sqlite3.connect("bot.db")
-    cur = conn.cursor()
-
-    cur.execute("SELECT rating FROM reviews WHERE seller_id=?", (seller_id,))
-    data = cur.fetchall()
-    conn.close()
-
-    if not data:
-        return "нет"
-
-    avg = sum(x[0] for x in data) / len(data)
-    return round(avg, 2)
-
-
 # 📄 мои объявления
 async def my_ads(update, context):
     conn = sqlite3.connect("bot.db")
     cur = conn.cursor()
 
-    cur.execute("SELECT id, text, likes, views FROM ads WHERE user_id=?", (update.effective_user.id,))
+    cur.execute("SELECT text, likes, views FROM ads WHERE user_id=?", (update.effective_user.id,))
     ads = cur.fetchall()
     conn.close()
 
-    for ad_id, text, likes, views in ads:
+    if not ads:
+        await update.message.reply_text("Нет объявлений")
+        return
+
+    for text, likes, views in ads:
         await update.message.reply_text(f"{text}\n❤️ {likes} 👁 {views}")
 
 
@@ -135,7 +121,7 @@ async def favs(update, context):
     cur = conn.cursor()
 
     cur.execute("""
-    SELECT ads.id, ads.text FROM ads
+    SELECT ads.text FROM ads
     JOIN favorites ON ads.id = favorites.ad_id
     WHERE favorites.user_id=?
     """, (update.effective_user.id,))
@@ -143,7 +129,7 @@ async def favs(update, context):
     data = cur.fetchall()
     conn.close()
 
-    for ad_id, text in data:
+    for (text,) in data:
         await update.message.reply_text(text)
 
 
@@ -206,6 +192,18 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     context.user_data["photo"] = update.message.photo[-1].file_id
     await update.message.reply_text("Теперь напиши: описание, цена")
+
+
+# 🚀 отправка во все каналы
+async def send_to_channels(context, photo, text, keyboard):
+    for channel in CHANNEL_IDS:
+        try:
+            if photo:
+                await context.bot.send_photo(channel, photo, caption=text, reply_markup=keyboard)
+            else:
+                await context.bot.send_message(channel, text, reply_markup=keyboard)
+        except Exception as e:
+            print(f"Ошибка отправки в канал {channel}: {e}")
 
 
 # 💬 сообщения
@@ -298,12 +296,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton("💬 Написать", callback_data=f"contact_{ad_id}")]
         ])
 
-        if context.user_data.get("photo"):
-            await context.bot.send_photo(CHANNEL_ID, context.user_data["photo"], caption=result, reply_markup=keyboard)
-        else:
-            await context.bot.send_message(CHANNEL_ID, result, reply_markup=keyboard)
+        # 🔥 отправка во все каналы
+        await send_to_channels(context, context.user_data.get("photo"), result, keyboard)
 
-        await update.message.reply_text("Опубликовано 🚀", reply_markup=main_kb())
+        await update.message.reply_text("Опубликовано во все каналы 🚀", reply_markup=main_kb())
         context.user_data.clear()
 
 
@@ -317,6 +313,6 @@ app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 app.add_handler(CallbackQueryHandler(buttons))
 
-print("🚀 STARTUP BOT RUNNING")
+print("🚀 MULTI CHANNEL BOT RUNNING")
 
 app.run_polling()
