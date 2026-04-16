@@ -153,7 +153,8 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     action, ad_id = query.data.split("_")
     ad_id = int(ad_id)
-    user_id = query.from_user.id
+    user = query.from_user
+    user_id = user.id
 
     conn = sqlite3.connect("bot.db")
     cur = conn.cursor()
@@ -175,15 +176,19 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("Добавлено ⭐")
 
     elif action == "msg":
-        # найти продавца
         cur.execute("SELECT user_id FROM ads WHERE id=?", (ad_id,))
         seller = cur.fetchone()[0]
 
-        # уведомление продавцу
+        # 👇 получаем username
+        if user.username:
+            user_info = f"@{user.username}"
+        else:
+            user_info = user.first_name
+
         try:
             await context.bot.send_message(
                 seller,
-                "📩 Кто-то хочет написать тебе по объявлению!"
+                f"📩 Кто-то хочет написать тебе!\n👤 {user_info}"
             )
         except:
             pass
