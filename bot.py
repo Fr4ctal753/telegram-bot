@@ -174,6 +174,22 @@ async def buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.commit()
         await query.answer("Добавлено ⭐")
 
+    elif action == "msg":
+        # найти продавца
+        cur.execute("SELECT user_id FROM ads WHERE id=?", (ad_id,))
+        seller = cur.fetchone()[0]
+
+        # уведомление продавцу
+        try:
+            await context.bot.send_message(
+                seller,
+                "📩 Кто-то хочет написать тебе по объявлению!"
+            )
+        except:
+            pass
+
+        await query.answer("Продавец уведомлен 📩")
+
     conn.close()
 
 
@@ -228,6 +244,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         for ad_id, t in data:
             keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton("💬 Написать", callback_data=f"msg_{ad_id}")],
                 [InlineKeyboardButton("❤️", callback_data=f"like_{ad_id}")],
                 [InlineKeyboardButton("⭐", callback_data=f"fav_{ad_id}")]
             ])
@@ -260,7 +277,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         ad_id = cur.lastrowid
 
-        # отправка во все каналы где пользователь админ
         cur.execute("SELECT chat_id FROM channels")
         channels = cur.fetchall()
 
@@ -268,6 +284,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         conn.close()
 
         keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💬 Написать", callback_data=f"msg_{ad_id}")],
             [InlineKeyboardButton("❤️", callback_data=f"like_{ad_id}")],
             [InlineKeyboardButton("⭐", callback_data=f"fav_{ad_id}")]
         ])
